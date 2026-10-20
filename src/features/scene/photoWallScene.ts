@@ -3,6 +3,16 @@ import { PhotoItem } from '../../services/photoSearchService';
 import { createPhotoCardTexture } from './photoTextureGenerator';
 import { Spring1D, Spring3D, APPLE_SPRINGS, decayVelocity } from './spatialPhysics';
 import { spatialAudio } from '../../utils/audio';
+import {
+  calculateFocusEffect,
+  calculateFacingWeight,
+  wrapCoordinate,
+  unwrapSpringBoundary,
+  getSpherePoint,
+  isDoubleClick,
+  clampPanBounds,
+} from './spatialMath';
+import { LayoutDensityManager } from './layoutDensityManager';
 
 export type SpatialMorphState = 'GRID' | 'CYLINDER' | 'SPHERE' | 'HELIX' | 'WAVE';
 
@@ -20,9 +30,18 @@ export interface SpatialCard {
   isFavorited: boolean;
   entranceDelay: number;
   opacitySpring: Spring1D;
+  quaternionTarget: THREE.Quaternion;
 }
 
 const LAYOUT_NAMES: SpatialMorphState[] = ['GRID', 'CYLINDER', 'SPHERE', 'HELIX', 'WAVE'];
+
+const LAYOUT_CAMERA_Z: Record<number, number> = {
+  0: 7.2,  // GRID
+  1: 8.8,  // CYLINDER (comfortable distance to view full multi-tier cylinder)
+  2: 11.5, // SPHERE (Fixed sphere center at 0,0,0 with radius 6.8)
+  3: 8.8,  // HELIX
+  4: 8.5,  // WAVE
+};
 
 /**
  * Creates true 3D rounded plane geometry using THREE.Shape with normalized UV mapping
@@ -52,7 +71,6 @@ function createRoundedCardGeometry(
 
   const geometry = new THREE.ShapeGeometry(shape, segments);
 
-  // Compute normalized UV coordinates across the rounded shape
   const pos = geometry.attributes.position;
   const uvs = new Float32Array(pos.count * 2);
   for (let i = 0; i < pos.count; i++) {
@@ -64,7 +82,6 @@ function createRoundedCardGeometry(
   geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geometry.computeVertexNormals();
 
-  // Outer rounded rim geometry
   const points = shape.getPoints(segments);
   const rimGeometry = new THREE.BufferGeometry().setFromPoints(points);
 
@@ -73,7 +90,6 @@ function createRoundedCardGeometry(
 
 /**
  * Generates an optical depth-of-field radial background gradient
- * Replaces pitch black with warm-cool depth and vignetting
  */
 function createSpatialDepthBackgroundTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
@@ -82,12 +98,12 @@ function createSpatialDepthBackgroundTexture(): THREE.CanvasTexture {
   const ctx = canvas.getContext('2d')!;
 
   const cx = canvas.width / 2;
-  const cy = canvas.height * 0.45;
-  const radius = canvas.width * 0.72;
+  const cy = canvas.height * 0.44;
+  const radius = canvas.width * 0.75;
 
-  const grad = ctx.createRadialGradient(cx, cy, 20, cx, cy, radius);
+  const grad = ctx.createRadialGradient(cx, cy, 30, cx, cy, radius);
   grad.addColorStop(0, '#262a34');    // Soft luminous spatial center
-  grad.addColorStop(0.38, '#191b22'); // Smooth depth charcoal
+  grad.addColorStop(0.36, '#191b22'); // Smooth depth charcoal
   grad.addColorStop(0.72, '#111217'); // Rich ambient slate
   grad.addColorStop(1.0, '#090a0d');  // Subtle optical vignette
 
@@ -107,31 +123,40 @@ export class PhotoWallScene {
   private animId: number | null = null;
   private clock: THREE.Clock;
 
-  // Spatial Cards
+  // Spatial Cards & Root Hierarchy
   private cards: SpatialCard[] = [];
   private cardGroup: THREE.Group;
   private groundReflection: THREE.Mesh | null = null;
 
-  // Continuous Morphing Factor: 0.0 = Grid, 1.0 = Cylinder, 2.0 = Sphere, 3.0 = Helix, 4.0 = Wave
+  // Continuous Morphing Factor: 0 = Grid, 1 = Cylinder, 2 = Sphere, 3 = Helix, 4 = Wave
   private morphSpring: Spring1D;
   private currentMorphFactor = 1.0;
 
-  // Camera & Orbit Springs
+  // Camera distance spring
   private cameraZSpring: Spring1D;
-  private cameraBaseZ = 5.8;
-  private orbitXSpring: Spring1D;
-  private orbitYSpring: Spring1D;
-  private panXSpring: Spring1D;
-  private panYSpring: Spring1D;
+
+  // Independent per-layout interaction transforms (DECOUPLED - NO ROTATION LEAKING!)
+  private gridScrollY = 0;
+  private gridTiltX = 0;
+  private gridTiltY = 0;
+
+  private cylinderAngle = 0;
+  private sphereRotX = 0;
+  private sphereRotY = 0;
+
+  private helixScrollY = 0;
+  private helixAngle = 0;
+
+  private waveScrollX = 0;
 
   // Inertial Velocities
-  private velocityOrbitX = 0;
-  private velocityOrbitY = 0;
+  private velocityX = 0;
+  private velocityY = 0;
 
-  // Auto-Play Cruise (when no hand gesture detected)
-  private isAutoPlaying = true;
-  private autoPlaySpeed = 0.052; // rad/s smooth cinematic orbit
-  private autoPlayPauseTimer = 0; // seconds before resuming auto-play
+  // Ambient Movement (Silent, natural, pauses when user interacts)
+  private ambientTime = 0;
+  private ambientWeight = 1.0;
+  private idleSeconds = 0;
 
   // Spatial Cursor Ring in 3D
   private spatialCursor: THREE.Mesh | null = null;
@@ -142,6 +167,16 @@ export class PhotoWallScene {
   private hoveredPhotoId: string | null = null;
   private inspectRotX = 0;
   private inspectRotY = 0;
+
+  // Detail Zoom State (Double click to zoom, single click to close)
+  private isDetailZoomed = false;
+  private detailPanX = 0;
+  private detailPanY = 0;
+  private clickTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private lastClickTimestamp = 0;
+  private lastClickTargetId: string | null = null;
+  private onDetailZoomCallback: ((isZoomed: boolean) => void) | null = null;
+
   private onSelectCallback: ((photo: PhotoItem | null) => void) | null = null;
   private onMorphProgressCallback: ((factor: number, stateName: SpatialMorphState) => void) | null = null;
   private onToggleZenCallback: (() => void) | null = null;
@@ -153,11 +188,16 @@ export class PhotoWallScene {
   private pointerStartY = 0;
   private lastPointerX = 0;
   private lastPointerY = 0;
-  private pointerButton = 0;
 
-  // Raycasting math helpers
+  // Math helpers
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
+  private tempMatrix = new THREE.Matrix4();
+  private lookMatrix = new THREE.Matrix4();
+  private qLook = new THREE.Quaternion();
+  private qBase = new THREE.Quaternion();
+  private qY180 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+  private upVec = new THREE.Vector3(0, 1, 0);
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -166,12 +206,12 @@ export class PhotoWallScene {
     // 1. Scene with Rich Depth of Field Gradient (No pitch black!)
     this.scene = new THREE.Scene();
     this.scene.background = createSpatialDepthBackgroundTexture();
-    this.scene.fog = new THREE.FogExp2(0x13151b, 0.016);
+    this.scene.fog = new THREE.FogExp2(0x13151b, 0.015);
 
     // 2. Camera setup
     const aspect = container.clientWidth / container.clientHeight;
     this.camera = new THREE.PerspectiveCamera(50, aspect, 0.1, 100);
-    this.camera.position.set(0, 0, this.cameraBaseZ);
+    this.camera.position.set(0, 0, LAYOUT_CAMERA_Z[1]);
 
     // 3. Renderer with high dynamic range and filmic tone
     const isHeadless = navigator.webdriver || /HeadlessChrome/i.test(navigator.userAgent);
@@ -187,17 +227,13 @@ export class PhotoWallScene {
     this.renderer.toneMappingExposure = 1.06;
     container.appendChild(this.renderer.domElement);
 
-    // 4. Groups
+    // 4. Clean Group Hierarchy: cardGroup is fixed at (0, 0, 0)
     this.cardGroup = new THREE.Group();
     this.scene.add(this.cardGroup);
 
-    // 5. Apple-grade Springs
+    // 5. Springs
     this.morphSpring = new Spring1D(1.0, APPLE_SPRINGS.morph);
-    this.cameraZSpring = new Spring1D(this.cameraBaseZ, APPLE_SPRINGS.camera);
-    this.orbitXSpring = new Spring1D(0, APPLE_SPRINGS.camera);
-    this.orbitYSpring = new Spring1D(0, APPLE_SPRINGS.camera);
-    this.panXSpring = new Spring1D(0, APPLE_SPRINGS.camera);
-    this.panYSpring = new Spring1D(0, APPLE_SPRINGS.camera);
+    this.cameraZSpring = new Spring1D(LAYOUT_CAMERA_Z[1], APPLE_SPRINGS.camera);
 
     this.initLighting();
     this.initGroundReflection();
@@ -226,12 +262,12 @@ export class PhotoWallScene {
     const groundMat = new THREE.MeshBasicMaterial({
       color: 0x181a21,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.25,
       depthWrite: false,
     });
     this.groundReflection = new THREE.Mesh(groundGeom, groundMat);
     this.groundReflection.rotation.x = -Math.PI / 2;
-    this.groundReflection.position.y = -6.5;
+    this.groundReflection.position.y = -6.8;
     this.scene.add(this.groundReflection);
   }
 
@@ -264,7 +300,7 @@ export class PhotoWallScene {
     });
     this.cards = [];
 
-    // Create 3D Rounded Card Geometry: 3.65 x 2.48 with generous smooth corner radius 0.32
+    // 3D Rounded Card Geometry: 3.65 x 2.48 with generous smooth corner radius 0.32
     const cardWidth = 3.65;
     const cardHeight = 2.48;
     const cardCornerRadius = 0.32;
@@ -277,28 +313,31 @@ export class PhotoWallScene {
         transparent: true,
         opacity: 0,
         side: THREE.DoubleSide,
-        depthWrite: false,
-        alphaTest: 0.02,
+        depthWrite: true,
+        depthTest: true,
+        alphaTest: 0.05,
       });
 
       const mesh = new THREE.Mesh(geometry.clone(), mat);
       mesh.userData = { photoId: photo.id };
 
-      // Outer rounded specular rim line
       const rimMat = new THREE.LineBasicMaterial({
         color: 0xffffff,
         transparent: true,
-        opacity: 0.25,
-        linewidth: 1.5,
+        opacity: 0,
+        depthTest: true,
+        depthWrite: false,
       });
       const rimLine = new THREE.LineLoop(rimGeometry.clone(), rimMat);
-      rimLine.position.z = 0.006;
+      rimLine.position.z = 0.008;
       mesh.add(rimLine);
 
-      const initialZ = -10 - idx * 0.4;
-      mesh.position.set(0, 0, initialZ);
+      // Initialize at target pose directly so no cards queue up at (0, 0, -10)
+      const initPose = this.getPoseAtStage(Math.round(this.morphSpring.target), idx, photos.length);
+      mesh.position.set(initPose.pos.x, initPose.pos.y, initPose.pos.z);
+      mesh.rotation.copy(initPose.rot);
 
-      const scaleSpring = new Spring1D(0.2, APPLE_SPRINGS.heroFocus);
+      const scaleSpring = new Spring1D(0.85, APPLE_SPRINGS.heroFocus);
       scaleSpring.setTarget(1.0);
 
       const card: SpatialCard = {
@@ -306,15 +345,16 @@ export class PhotoWallScene {
         photo,
         mesh,
         rimLine,
-        springPos: new Spring3D(0, 0, initialZ, APPLE_SPRINGS.morph),
+        springPos: new Spring3D(initPose.pos.x, initPose.pos.y, initPose.pos.z, APPLE_SPRINGS.morph),
         springRot: new Spring3D(0, 0, 0, APPLE_SPRINGS.morph),
         springScale: scaleSpring,
         targetScale: 1.0,
         isHovered: false,
         isSelected: false,
         isFavorited: false,
-        entranceDelay: idx * 0.035,
-        opacitySpring: new Spring1D(0, { stiffness: 140, damping: 20, mass: 1.0 }),
+        entranceDelay: idx * 0.02,
+        opacitySpring: new Spring1D(0, { stiffness: 160, damping: 22, mass: 1.0 }),
+        quaternionTarget: new THREE.Quaternion(),
       };
 
       this.cards.push(card);
@@ -324,6 +364,9 @@ export class PhotoWallScene {
     spatialAudio.playPhotosLoaded();
   }
 
+  /**
+   * Layout Pose Calculation with Fixed Sphere Center & Independent Transforms
+   */
   private getPoseAtStage(
     stageIdx: number,
     itemIdx: number,
@@ -333,68 +376,110 @@ export class PhotoWallScene {
     const rot = new THREE.Euler();
 
     if (stageIdx === 0) {
-      // 0: GRID MATRIX
+      // 0: GRID MATRIX - Clean, upright, seamless vertical flow
       const cols = Math.min(4, Math.ceil(Math.sqrt(total * 1.3)));
       const rows = Math.ceil(total / cols);
       const col = itemIdx % cols;
       const row = Math.floor(itemIdx / cols);
 
-      const x = (col - (cols - 1) / 2) * 4.1;
-      const y = -(row - (rows - 1) / 2) * 2.8;
-      const z = Math.sin(col * 0.6 + row * 0.4) * 0.5 - 0.5;
+      const spanY = Math.max(8.0, rows * 2.85);
+      const baseX = (col - (cols - 1) / 2) * 4.2;
+      const rawY = -(row - (rows - 1) / 2) * 2.85 + this.gridScrollY;
+      const wrappedY = wrapCoordinate(rawY, spanY);
 
-      pos.set(x, y, z);
-      rot.set(0.02 * (row - rows / 2), 0.02 * (col - cols / 2), 0);
+      // Subtle cylindrical curvature across X so cards face observer naturally
+      const curveAngle = (col - (cols - 1) / 2) * 0.08 + this.gridTiltY;
+      const z = -Math.abs(col - (cols - 1) / 2) * 0.25;
+
+      pos.set(baseX, wrappedY, z);
+      rot.set(this.gridTiltX, curveAngle, 0);
     } else if (stageIdx === 1) {
-      // 1: CYLINDER ARC
-      const radius = 6.8;
-      const arcAngle = Math.PI * 1.15;
-      const angleStep = arcAngle / Math.max(1, total - 1);
-      const angle = -arcAngle / 2 + itemIdx * angleStep;
+      // 1: MULTI-TIER CYLINDER GALLERY (3~5 rows, parametric cylindrical coordinates)
+      const cyl = LayoutDensityManager.getCylinderConfig({
+        itemCount: total,
+        aspect: this.camera.aspect,
+        viewportWidth: this.container ? this.container.clientWidth : 1440,
+        viewportHeight: this.container ? this.container.clientHeight : 900,
+      });
 
-      const rowOffset = (itemIdx % 2 === 0 ? 0.8 : -0.8) * 0.85;
+      const col = itemIdx % cyl.cols;
+      const row = Math.floor(itemIdx / cyl.cols);
+      const centerRow = (cyl.rows - 1) / 2;
 
-      const x = Math.sin(angle) * radius;
-      const z = -Math.cos(angle) * radius + radius - 1.2;
-      const y = rowOffset;
+      // Stagger alternating rows for natural diamond lattice
+      const rowStagger = (row % 2 === 1) ? cyl.angleStep * 0.5 : 0;
+      const theta = col * cyl.angleStep + rowStagger + this.cylinderAngle;
+
+      const x = Math.sin(theta) * cyl.radius;
+      const z = Math.cos(theta) * cyl.radius - cyl.radius;
+      const y = (row - centerRow) * cyl.verticalSpacing;
 
       pos.set(x, y, z);
-      rot.set(0, angle, 0);
+      rot.set(0, theta, 0);
     } else if (stageIdx === 2) {
-      // 2: SPHERE DOME
-      const phi = Math.acos(-1 + (2 * (itemIdx + 0.5)) / total);
-      const theta = Math.sqrt(total * Math.PI) * phi;
-      const radius = 7.5;
+      // 2: SPHERE DOME - FIXED SPHERE CENTER AT (0, 0, 0)!
+      const pt = getSpherePoint(itemIdx, total, 6.8);
 
-      const x = radius * Math.cos(theta) * Math.sin(phi);
-      const y = radius * Math.cos(phi) * 0.75;
-      const z = -radius * Math.sin(theta) * Math.sin(phi) + radius - 2.5;
+      // Rotate point around fixed center (0, 0, 0)
+      const cosY = Math.cos(this.sphereRotY);
+      const sinY = Math.sin(this.sphereRotY);
+      const cosX = Math.cos(this.sphereRotX);
+      const sinX = Math.sin(this.sphereRotX);
 
-      pos.set(x, y, z);
-      rot.set(-phi + Math.PI / 2, theta + Math.PI / 2, 0);
+      // Y-axis rotation first
+      let rx = pt.x * cosY + pt.z * sinY;
+      let ry = pt.y;
+      let rz = -pt.x * sinY + pt.z * cosY;
+
+      // X-axis elevation tilt
+      const fy = ry * cosX - rz * sinX;
+      const fz = ry * sinX + rz * cosX;
+
+      pos.set(rx, fy, fz);
+
+      // Card faces outward along sphere radius
+      const normal = pos.clone().normalize();
+      const lookTarget = pos.clone().add(normal);
+      this.tempMatrix.lookAt(pos, lookTarget, this.upVec);
+      rot.setFromRotationMatrix(this.tempMatrix);
     } else if (stageIdx === 3) {
-      // 3: SPIRAL HELIX
-      const loops = 2.2;
-      const angle = (itemIdx / total) * Math.PI * 2 * loops;
+      // 3: SPIRAL HELIX - DNA carousel with continuous vertical flow
+      const loops = 2.4;
+      const heightSpan = 11.0;
+      const rawY = -(heightSpan / 2) + (itemIdx / total) * heightSpan + this.helixScrollY;
+      const wrappedY = wrapCoordinate(rawY, heightSpan);
+
+      const angle = (itemIdx / total) * Math.PI * 2 * loops + this.helixAngle;
       const radius = 5.8;
-      const heightRange = 10.5;
-      const y = -(heightRange / 2) + (itemIdx / total) * heightRange;
 
       const x = Math.cos(angle) * radius;
-      const z = Math.sin(angle) * radius - 1.0;
+      const z = Math.sin(angle) * radius;
 
-      pos.set(x, y, z);
-      rot.set(0.08, -angle + Math.PI / 2, 0.04);
+      pos.set(x, wrappedY, z);
+      rot.set(0.04, -angle + Math.PI / 2, 0);
     } else {
-      // 4: WAVE FLOW
-      const x = (itemIdx - (total - 1) / 2) * 3.8;
-      const waveFreq = 0.55;
-      const y = Math.sin(itemIdx * waveFreq) * 1.75;
-      const z = Math.cos(itemIdx * waveFreq * 0.8) * 2.2 - 1.5;
+      // 4: MULTI-ROW 3D WAVE WALL (Multi-tier undulating surface)
+      const wave = LayoutDensityManager.getWaveConfig({
+        itemCount: total,
+        aspect: this.camera.aspect,
+        viewportWidth: this.container ? this.container.clientWidth : 1440,
+        viewportHeight: this.container ? this.container.clientHeight : 900,
+      });
 
-      pos.set(x, y, z);
-      const tangentY = Math.cos(itemIdx * waveFreq) * 1.75 * waveFreq;
-      rot.set(-tangentY * 0.15, -0.05 * itemIdx, 0);
+      const col = itemIdx % wave.cols;
+      const row = Math.floor(itemIdx / wave.cols);
+      const centerRow = (wave.rows - 1) / 2;
+
+      const rawX = (col - (wave.cols - 1) / 2) * wave.spacingX + this.waveScrollX;
+      const wrappedX = wrapCoordinate(rawX, wave.spanX);
+
+      const wavePhase = (wrappedX * 0.28) + (row * 0.85);
+      const y = (row - centerRow) * wave.spacingY + Math.sin(wavePhase) * wave.ampY;
+      const z = Math.cos(wavePhase * 0.75) * wave.ampZ - Math.abs(col - (wave.cols - 1) / 2) * 0.12;
+
+      pos.set(wrappedX, y, z);
+      const slopeY = Math.cos(wavePhase) * wave.ampY * 0.28;
+      rot.set(-slopeY * 0.2, -Math.sin(wavePhase * 0.75) * 0.22, 0);
     }
 
     return { pos, rot };
@@ -413,7 +498,6 @@ export class PhotoWallScene {
     const stageB = Math.min(stageA + 1, 4);
     const t = clampedFactor - stageA;
 
-    // Smoothstep for organic spatial morphing
     const smoothT = t * t * (3 - 2 * t);
 
     const poseA = this.getPoseAtStage(stageA, itemIdx, total);
@@ -430,8 +514,22 @@ export class PhotoWallScene {
     return { pos, rot };
   }
 
+  /**
+   * Morph to layout: Dismiss hero view, smoothly adjust camera, decoupled from previous layout
+   */
   public setMorphFactor(factor: number) {
     const clamped = THREE.MathUtils.clamp(factor, 0, 4.0);
+    const targetStage = Math.round(clamped);
+
+    // Dismiss any active selected hero so it returns cleanly to the wall
+    if (this.selectedPhotoId) {
+      this.selectPhoto(null);
+    }
+
+    // Adapt camera distance to target layout
+    const targetCamZ = LAYOUT_CAMERA_Z[targetStage] || 6.8;
+    this.cameraZSpring.setTarget(targetCamZ);
+
     this.morphSpring.setTarget(clamped);
     spatialAudio.playMorphShift();
   }
@@ -447,29 +545,49 @@ export class PhotoWallScene {
   }
 
   public resetView() {
-    this.orbitXSpring.setTarget(0);
-    this.orbitYSpring.setTarget(0);
-    this.panXSpring.setTarget(0);
-    this.panYSpring.setTarget(0);
-    this.cameraZSpring.setTarget(this.cameraBaseZ);
-    this.velocityOrbitX = 0;
-    this.velocityOrbitY = 0;
+    const nearestStage = Math.min(Math.round(this.morphSpring.target), 4);
+    const targetCamZ = LAYOUT_CAMERA_Z[nearestStage] || 6.8;
+
+    this.gridScrollY = 0;
+    this.gridTiltX = 0;
+    this.gridTiltY = 0;
+    this.cylinderAngle = 0;
+    this.sphereRotX = 0;
+    this.sphereRotY = 0;
+    this.helixScrollY = 0;
+    this.helixAngle = 0;
+    this.waveScrollX = 0;
+    this.velocityX = 0;
+    this.velocityY = 0;
+
+    this.cameraZSpring.setTarget(targetCamZ);
     this.selectPhoto(null);
     spatialAudio.playResetChime();
   }
 
   public tiltElevation(amount: number) {
-    this.orbitXSpring.setTarget(
-      THREE.MathUtils.clamp(this.orbitXSpring.target + amount, -Math.PI / 3, Math.PI / 3)
-    );
+    this.sphereRotX = THREE.MathUtils.clamp(this.sphereRotX + amount, -Math.PI / 3, Math.PI / 3);
+    this.gridTiltX = THREE.MathUtils.clamp(this.gridTiltX + amount * 0.5, -Math.PI / 4, Math.PI / 4);
   }
 
   public selectPhoto(photoId: string | null) {
+    if (this.clickTimeoutId !== null) {
+      clearTimeout(this.clickTimeoutId);
+      this.clickTimeoutId = null;
+    }
+
     if (this.selectedPhotoId === photoId) return;
 
     this.selectedPhotoId = photoId;
     this.inspectRotX = 0;
     this.inspectRotY = 0;
+    this.isDetailZoomed = false;
+    this.detailPanX = 0;
+    this.detailPanY = 0;
+
+    if (this.onDetailZoomCallback) {
+      this.onDetailZoomCallback(false);
+    }
 
     let selectedItem: PhotoItem | null = null;
 
@@ -478,19 +596,22 @@ export class PhotoWallScene {
       c.isSelected = isThis;
       c.isHovered = false;
 
-      // Update texture with selection glow
       c.mesh.material.map = createPhotoCardTexture(c.photo, false, isThis);
       c.mesh.material.needsUpdate = true;
 
       if (isThis) {
         selectedItem = c.photo;
         c.springScale.setTarget(1.35); // Enlarge in hero view
-        c.mesh.renderOrder = 100;
+        c.mesh.renderOrder = 300;
+        c.mesh.material.depthTest = false; // Guaranteed on top
         (c.rimLine.material as THREE.LineBasicMaterial).opacity = 1.0;
+        c.rimLine.renderOrder = 301;
       } else {
         c.springScale.setTarget(photoId ? 0.85 : 1.0);
         c.mesh.renderOrder = 1;
+        c.mesh.material.depthTest = true;
         (c.rimLine.material as THREE.LineBasicMaterial).opacity = 0.22;
+        c.rimLine.renderOrder = 2;
       }
     });
 
@@ -503,6 +624,33 @@ export class PhotoWallScene {
     } else {
       spatialAudio.playInspectClose();
     }
+  }
+
+  /**
+   * Toggles local detail zoom (2.65x) on enlarged photo
+   */
+  public toggleDetailZoom(): boolean {
+    if (!this.selectedPhotoId) return false;
+    this.isDetailZoomed = !this.isDetailZoomed;
+    if (!this.isDetailZoomed) {
+      this.detailPanX = 0;
+      this.detailPanY = 0;
+      spatialAudio.playInspectClose();
+    } else {
+      spatialAudio.playInspectOpen();
+    }
+    if (this.onDetailZoomCallback) {
+      this.onDetailZoomCallback(this.isDetailZoomed);
+    }
+    return this.isDetailZoomed;
+  }
+
+  public isDetailZoomActive(): boolean {
+    return this.isDetailZoomed;
+  }
+
+  public setOnDetailZoomCallback(cb: (isZoomed: boolean) => void) {
+    this.onDetailZoomCallback = cb;
   }
 
   public toggleFavoriteCurrent() {
@@ -550,28 +698,32 @@ export class PhotoWallScene {
     isSwipeDown: boolean,
     isFist: boolean,
     isThumbsUp: boolean,
-    isVictoryLike: boolean,
+    _isVictoryLike: boolean,
     handDistanceSpread: number | null
   ) {
-    // Whenever any hand gesture is detected: PAUSE AUTO-PLAY IMMEDIATELY!
-    this.isAutoPlaying = false;
-    this.autoPlayPauseTimer = 3.0; // 3 seconds pause before resuming auto-cruise
+    this.idleSeconds = 0;
+    this.ambientWeight = 0;
 
-    // 1. Thumbs Up: Toggle Favorite / Heart
+    // 1. Thumbs Up
     if (isThumbsUp) {
       this.toggleFavoriteCurrent();
       return;
     }
 
-    // 2. Fist: Zoom Out or Dismiss Inspection
-    if (isFist) {
-      if (this.selectedPhotoId) {
+    // 2. Gesture Control to Close Single Enlarged Photo:
+    // Support Fist (握拳), Swipe Down (下滑推出), Swipe Up (上划关闭), or Two-Hand Close (双手合拢)
+    if (this.selectedPhotoId) {
+      if (isFist || isSwipeDown || isSwipeUp) {
+        this.selectPhoto(null);
+        return;
+      }
+      if (handDistanceSpread !== null && handDistanceSpread < 0.12) {
         this.selectPhoto(null);
         return;
       }
     }
 
-    // 3. Three-Finger Swipes: Continuous Layout Morphing
+    // 3. Three-Finger Swipes: Layout Morphing
     if (isSwipeRight) {
       this.cycleNextMorph();
       return;
@@ -589,7 +741,7 @@ export class PhotoWallScene {
       return;
     }
 
-    // 4. Two-Hand Spread: Continuous shape morphing
+    // 4. Two-Hand Spread
     if (handDistanceSpread !== null && handDistanceSpread > 0.18) {
       const spreadNorm = THREE.MathUtils.clamp((handDistanceSpread - 0.2) / 0.5, 0, 1);
       const targetFactor = spreadNorm * 4.0;
@@ -606,27 +758,44 @@ export class PhotoWallScene {
     // 6. Two-Finger Pan / Drag Orbit
     if (this.selectedPhotoId) {
       if (Math.abs(panDelta.x) > 0.001 || Math.abs(panDelta.y) > 0.001) {
-        this.inspectRotY += panDelta.x * 0.25;
-        this.inspectRotX += panDelta.y * 0.25;
+        if (this.isDetailZoomed) {
+          const pan = clampPanBounds(
+            this.detailPanX + panDelta.x * 3.5,
+            this.detailPanY - panDelta.y * 3.5,
+            4.0,
+            3.0
+          );
+          this.detailPanX = pan.x;
+          this.detailPanY = pan.y;
+        } else {
+          this.inspectRotY += panDelta.x * 0.25;
+          this.inspectRotX += panDelta.y * 0.25;
+        }
       }
     } else {
-      if (Math.abs(panDelta.x) > 0.001 || Math.abs(panDelta.y) > 0.001) {
-        this.velocityOrbitY = panDelta.x * 0.35;
-        this.velocityOrbitX = panDelta.y * 0.25;
-
-        this.orbitYSpring.setTarget(this.orbitYSpring.target + panDelta.x * 0.35);
-        this.orbitXSpring.setTarget(
-          THREE.MathUtils.clamp(this.orbitXSpring.target + panDelta.y * 0.25, -Math.PI / 3, Math.PI / 3)
-        );
+      const nearestStage = Math.min(Math.round(this.morphSpring.target), 4);
+      if (nearestStage === 0) {
+        // Grid: pan Y & tilt
+        this.gridScrollY += panDelta.y * 0.35;
+        this.gridTiltY += panDelta.x * 0.15;
+      } else if (nearestStage === 1) {
+        this.cylinderAngle += panDelta.x * 0.3;
+      } else if (nearestStage === 2) {
+        this.sphereRotY += panDelta.x * 0.3;
+        this.sphereRotX = THREE.MathUtils.clamp(this.sphereRotX + panDelta.y * 0.2, -Math.PI / 3, Math.PI / 3);
+      } else if (nearestStage === 3) {
+        this.helixScrollY += panDelta.y * 0.3;
+        this.helixAngle += panDelta.x * 0.3;
+      } else {
+        this.waveScrollX += panDelta.x * 0.4;
       }
 
       if (Math.abs(rotationDelta) > 0.001) {
-        this.orbitYSpring.setTarget(this.orbitYSpring.target + rotationDelta * 0.4);
+        this.sphereRotY += rotationDelta * 0.35;
       }
     }
 
-    // 7. Single Point: Aim & Focus with Ethereal Contour Rim Glow
-    // Pinch: Confirm and Enlarge
+    // 7. Single Point & Pinch
     if (normalizedPointer) {
       this.updatePointerRaycast(normalizedPointer.x, normalizedPointer.y, isPinching);
     }
@@ -636,7 +805,7 @@ export class PhotoWallScene {
     this.mouse.set(x, y);
     this.raycaster.setFromCamera(this.mouse, this.camera);
 
-    // Update 3D Spatial Cursor Ring position
+    // Update 3D Spatial Cursor Ring
     if (this.spatialCursor) {
       const cursorDist = 4.2;
       const cursorPos = new THREE.Vector3(x, y, 0.5);
@@ -657,23 +826,27 @@ export class PhotoWallScene {
         this.hoveredPhotoId = hitPhotoId;
         spatialAudio.playTactileTick();
 
-        // "选聚焦时，照片发出轮廓光"
+        // Bring hovered card forward to the top layer - no wireframe clipping!
         this.cards.forEach((c) => {
           c.isHovered = c.id === hitPhotoId;
           c.mesh.material.map = createPhotoCardTexture(c.photo, c.isHovered, c.isSelected);
           c.mesh.material.needsUpdate = true;
 
-          // Luminous rim highlight
           const rimMat = c.rimLine.material as THREE.LineBasicMaterial;
           rimMat.opacity = c.isHovered ? 0.95 : c.isSelected ? 1.0 : 0.22;
 
-          if (!c.isSelected) {
-            c.springScale.setTarget(c.isHovered ? 1.14 : 1.0); // Gentle pop forward
+          if (c.isHovered) {
+            c.mesh.renderOrder = 200; // Bring in front of all other cards!
+            c.rimLine.renderOrder = 201;
+            c.springScale.setTarget(1.15); // Tactile hover pop
+          } else if (!c.isSelected) {
+            c.mesh.renderOrder = 1;
+            c.rimLine.renderOrder = 2;
+            c.springScale.setTarget(1.0);
           }
         });
       }
 
-      // "食指和拇指啮合确定放大当前聚焦的图片"
       if (isPinching) {
         this.selectPhoto(hitPhotoId);
       }
@@ -687,6 +860,8 @@ export class PhotoWallScene {
             c.mesh.material.needsUpdate = true;
             (c.rimLine.material as THREE.LineBasicMaterial).opacity = c.isSelected ? 1.0 : 0.22;
             if (!c.isSelected) {
+              c.mesh.renderOrder = 1;
+              c.rimLine.renderOrder = 2;
               c.springScale.setTarget(1.0);
             }
           }
@@ -700,8 +875,8 @@ export class PhotoWallScene {
 
     const onPointerDown = (e: MouseEvent | TouchEvent) => {
       this.isPointerDown = true;
-      this.isAutoPlaying = false;
-      this.autoPlayPauseTimer = 3.0;
+      this.idleSeconds = 0;
+      this.ambientWeight = 0;
 
       const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
@@ -709,10 +884,12 @@ export class PhotoWallScene {
       this.pointerStartY = clientY;
       this.lastPointerX = clientX;
       this.lastPointerY = clientY;
-      this.pointerButton = 'button' in e ? e.button : 0;
     };
 
     const onPointerMove = (e: MouseEvent | TouchEvent) => {
+      this.idleSeconds = 0;
+      this.ambientWeight = 0;
+
       const rect = el.getBoundingClientRect();
       const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
@@ -727,18 +904,38 @@ export class PhotoWallScene {
         const dy = (clientY - this.lastPointerY) * 0.005;
 
         if (this.selectedPhotoId) {
-          this.inspectRotY += dx * 2.0;
-          this.inspectRotX += dy * 2.0;
-        } else if (this.pointerButton === 2 || ('shiftKey' in e && e.shiftKey)) {
-          this.panXSpring.setTarget(this.panXSpring.target + dx * 8);
-          this.panYSpring.setTarget(this.panYSpring.target - dy * 8);
+          if (this.isDetailZoomed) {
+            const pan = clampPanBounds(
+              this.detailPanX + dx * 4.2,
+              this.detailPanY - dy * 4.2,
+              4.5,
+              3.2
+            );
+            this.detailPanX = pan.x;
+            this.detailPanY = pan.y;
+          } else {
+            this.inspectRotY += dx * 2.0;
+            this.inspectRotX += dy * 2.0;
+          }
         } else {
-          this.velocityOrbitY = dx * 1.5;
-          this.velocityOrbitX = dy * 1.5;
-          this.orbitYSpring.setTarget(this.orbitYSpring.target + dx * 1.5);
-          this.orbitXSpring.setTarget(
-            THREE.MathUtils.clamp(this.orbitXSpring.target + dy * 1.5, -Math.PI / 3, Math.PI / 3)
-          );
+          this.velocityX = dx * 1.5;
+          this.velocityY = dy * 1.5;
+
+          const nearestStage = Math.min(Math.round(this.morphSpring.target), 4);
+          if (nearestStage === 0) {
+            this.gridScrollY += dy * 3.5;
+            this.gridTiltY += dx * 0.8;
+          } else if (nearestStage === 1) {
+            this.cylinderAngle += dx * 1.5;
+          } else if (nearestStage === 2) {
+            this.sphereRotY += dx * 1.5;
+            this.sphereRotX = THREE.MathUtils.clamp(this.sphereRotX + dy * 1.2, -Math.PI / 3, Math.PI / 3);
+          } else if (nearestStage === 3) {
+            this.helixScrollY += dy * 2.5;
+            this.helixAngle += dx * 1.2;
+          } else {
+            this.waveScrollX += dx * 3.0;
+          }
         }
 
         this.lastPointerX = clientX;
@@ -765,11 +962,76 @@ export class PhotoWallScene {
             false
           );
 
-          if (intersects.length > 0) {
-            const hitPhotoId = intersects[0].object.userData.photoId as string;
-            this.selectPhoto(hitPhotoId);
-          } else if (this.selectedPhotoId) {
-            this.selectPhoto(null);
+          const now = performance.now();
+          const isDbl = isDoubleClick(now, this.lastClickTimestamp, 280);
+
+          if (this.selectedPhotoId) {
+            // 1. PHOTO IS CURRENTLY ENLARGED
+            if (isDbl) {
+              // DOUBLE CLICK: Toggle local detail zoom (2.65x)
+              if (this.clickTimeoutId !== null) {
+                clearTimeout(this.clickTimeoutId);
+                this.clickTimeoutId = null;
+              }
+              this.lastClickTimestamp = 0;
+              this.lastClickTargetId = null;
+              this.toggleDetailZoom();
+            } else {
+              // SINGLE CLICK: Debounce for double-click; if no second click, CLOSE PHOTO!
+              this.lastClickTimestamp = now;
+              this.lastClickTargetId = this.selectedPhotoId;
+
+              if (this.clickTimeoutId !== null) {
+                clearTimeout(this.clickTimeoutId);
+              }
+
+              this.clickTimeoutId = setTimeout(() => {
+                this.clickTimeoutId = null;
+                // Single click closes enlarged photo and returns to gallery
+                this.selectPhoto(null);
+              }, 250);
+            }
+          } else {
+            // 2. PHOTO WALL GALLERY MODE
+            if (intersects.length > 0) {
+              const hitPhotoId = intersects[0].object.userData.photoId as string;
+
+              if (isDbl && this.lastClickTargetId === hitPhotoId) {
+                // Double click from gallery: open directly into detail zoom
+                if (this.clickTimeoutId !== null) {
+                  clearTimeout(this.clickTimeoutId);
+                  this.clickTimeoutId = null;
+                }
+                this.lastClickTimestamp = 0;
+                this.lastClickTargetId = null;
+                this.selectPhoto(hitPhotoId);
+                this.isDetailZoomed = true;
+                if (this.onDetailZoomCallback) {
+                  this.onDetailZoomCallback(true);
+                }
+                spatialAudio.playInspectOpen();
+              } else {
+                // Single click on card: enlarge photo
+                this.lastClickTimestamp = now;
+                this.lastClickTargetId = hitPhotoId;
+
+                if (this.clickTimeoutId !== null) {
+                  clearTimeout(this.clickTimeoutId);
+                }
+
+                this.clickTimeoutId = setTimeout(() => {
+                  this.clickTimeoutId = null;
+                  this.selectPhoto(hitPhotoId);
+                }, 240);
+              }
+            } else {
+              if (this.clickTimeoutId !== null) {
+                clearTimeout(this.clickTimeoutId);
+                this.clickTimeoutId = null;
+              }
+              this.lastClickTimestamp = 0;
+              this.lastClickTargetId = null;
+            }
           }
         }
       }
@@ -777,8 +1039,8 @@ export class PhotoWallScene {
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      this.isAutoPlaying = false;
-      this.autoPlayPauseTimer = 3.0;
+      this.idleSeconds = 0;
+      this.ambientWeight = 0;
 
       const deltaZ = e.deltaY * 0.012;
       const targetZ = THREE.MathUtils.clamp(this.cameraZSpring.target + deltaZ, 3.8, 16.0);
@@ -786,8 +1048,8 @@ export class PhotoWallScene {
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      this.isAutoPlaying = false;
-      this.autoPlayPauseTimer = 3.0;
+      this.idleSeconds = 0;
+      this.ambientWeight = 0;
 
       if (e.key === 'Escape') {
         this.selectPhoto(null);
@@ -816,9 +1078,22 @@ export class PhotoWallScene {
       this.renderer.setSize(w, h);
     };
 
+    const onDblClick = () => {
+      if (this.clickTimeoutId !== null) {
+        clearTimeout(this.clickTimeoutId);
+        this.clickTimeoutId = null;
+      }
+      this.lastClickTimestamp = 0;
+      this.lastClickTargetId = null;
+      if (this.selectedPhotoId) {
+        this.toggleDetailZoom();
+      }
+    };
+
     el.addEventListener('mousedown', onPointerDown);
     window.addEventListener('mousemove', onPointerMove);
     window.addEventListener('mouseup', onPointerUp);
+    el.addEventListener('dblclick', onDblClick);
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -836,97 +1111,177 @@ export class PhotoWallScene {
     const dt = Math.min(this.clock.getDelta(), 0.05);
 
     this.currentMorphFactor = this.morphSpring.update(dt);
+    const nearestStage = Math.min(Math.round(this.currentMorphFactor), 4);
+    const activeStageName = LAYOUT_NAMES[nearestStage];
 
-    // Auto-Play Cruise logic:
-    // When no hand gestures detected, gallery slowly orbits and cycles
-    if (this.autoPlayPauseTimer > 0) {
-      this.autoPlayPauseTimer -= dt;
-      if (this.autoPlayPauseTimer <= 0 && !this.selectedPhotoId && !this.isPointerDown) {
-        this.isAutoPlaying = true;
+    // Idle Detection & Seamless Ambient Movement
+    if (!this.selectedPhotoId && !this.isPointerDown) {
+      this.idleSeconds += dt;
+      if (this.idleSeconds > 1.8) {
+        this.ambientWeight = Math.min(1.0, this.ambientWeight + dt * 0.7);
       }
+    } else {
+      this.ambientWeight = Math.max(0, this.ambientWeight - dt * 2.5);
     }
 
-    if (this.isAutoPlaying && !this.selectedPhotoId && !this.isPointerDown) {
-      this.orbitYSpring.setTarget(this.orbitYSpring.target + this.autoPlaySpeed * dt);
-      if (this.spatialCursor) {
-        (this.spatialCursor.material as THREE.MeshBasicMaterial).opacity = 0;
-      }
+    this.ambientTime += dt * this.ambientWeight;
+
+    // Apply layout-specific continuous ambient motion when idle
+    const ambientSpeed = 0.5 * this.ambientWeight * dt;
+    if (activeStageName === 'GRID') {
+      this.gridScrollY += ambientSpeed * 1.8; // Continuous smooth vertical flow!
+      this.gridTiltY = decayVelocity(this.gridTiltY, 0.92, dt); // Gentle spring return
+      this.gridTiltX = decayVelocity(this.gridTiltX, 0.92, dt);
+    } else if (activeStageName === 'CYLINDER') {
+      this.cylinderAngle += ambientSpeed * 0.45;
+    } else if (activeStageName === 'SPHERE') {
+      this.sphereRotY += ambientSpeed * 0.4; // Continuous rotation around fixed sphere center!
+    } else if (activeStageName === 'HELIX') {
+      this.helixScrollY += ambientSpeed * 1.5;
+      this.helixAngle += ambientSpeed * 0.35;
+    } else {
+      this.waveScrollX += ambientSpeed * 2.0;
     }
 
+    // Inertial velocity decay
     if (!this.isPointerDown) {
-      this.velocityOrbitX = decayVelocity(this.velocityOrbitX, 0.9, dt);
-      this.velocityOrbitY = decayVelocity(this.velocityOrbitY, 0.9, dt);
-      if (Math.abs(this.velocityOrbitX) > 0.0001) {
-        this.orbitXSpring.setTarget(this.orbitXSpring.target + this.velocityOrbitX * dt);
-      }
-      if (Math.abs(this.velocityOrbitY) > 0.0001) {
-        this.orbitYSpring.setTarget(this.orbitYSpring.target + this.velocityOrbitY * dt);
-      }
+      this.velocityX = decayVelocity(this.velocityX, 0.9, dt);
+      this.velocityY = decayVelocity(this.velocityY, 0.9, dt);
     }
 
     const camZ = this.cameraZSpring.update(dt);
     this.camera.position.z = camZ;
 
-    const orbitX = this.orbitXSpring.update(dt);
-    const orbitY = this.orbitYSpring.update(dt);
-    const panX = this.panXSpring.update(dt);
-    const panY = this.panYSpring.update(dt);
-
-    this.cardGroup.position.set(panX, panY, 0);
-    this.cardGroup.rotation.set(orbitX, orbitY, 0);
-
     const total = this.cards.length;
+    const cameraPos = this.camera.position;
 
     this.cards.forEach((card, idx) => {
       if (card.entranceDelay > 0) {
         card.entranceDelay -= dt;
-        return;
+      } else {
+        card.opacitySpring.setTarget(1.0);
       }
-
-      card.opacitySpring.setTarget(1.0);
-      const op = card.opacitySpring.update(dt);
-      card.mesh.material.opacity = op;
+      const entranceOp = card.opacitySpring.update(dt);
+      let targetOpacity = 1.0;
 
       if (card.isSelected) {
-        // Enlarge in front of camera
-        const targetWorldPos = new THREE.Vector3(0, 0, camZ - 2.8);
-        const invGroup = this.cardGroup.matrixWorld.clone().invert();
-        targetWorldPos.applyMatrix4(invGroup);
+        // Enlarge directly in front of camera
+        const targetScale = this.isDetailZoomed ? 2.65 : 1.35;
+        card.springScale.setTarget(targetScale);
+        card.springPos.setTarget(this.detailPanX, this.detailPanY, camZ - 2.8);
 
-        card.springPos.setTarget(targetWorldPos.x, targetWorldPos.y, targetWorldPos.z);
-        card.springRot.setTarget(-orbitX + this.inspectRotX, -orbitY + this.inspectRotY, 0);
+        if (this.isDetailZoomed) {
+          // Keep orientation straight during local detail zoom for crystal clear viewing
+          this.inspectRotX = decayVelocity(this.inspectRotX, 0.85, dt);
+          this.inspectRotY = decayVelocity(this.inspectRotY, 0.85, dt);
+        }
+
+        card.springRot.setTarget(this.inspectRotX, this.inspectRotY, 0);
+        card.mesh.material.opacity = 1.0;
+        (card.rimLine.material as THREE.LineBasicMaterial).opacity = 1.0;
       } else {
         const targetPose = this.computeContinuousPose(idx, total, this.currentMorphFactor);
 
-        // Add subtle hover z-lift
-        const zOffset = card.isHovered ? 0.35 : 0;
-        card.springPos.setTarget(targetPose.pos.x, targetPose.pos.y, targetPose.pos.z + zOffset);
-        card.springRot.setTarget(targetPose.rot.x, targetPose.rot.y, targetPose.rot.z);
+        let finalX = targetPose.pos.x;
+        let finalY = targetPose.pos.y;
+        let finalZ = targetPose.pos.z;
+
+        // Calculate card normal dot product with vector to camera
+        const toCam = cameraPos.clone().sub(new THREE.Vector3(finalX, finalY, finalZ)).normalize();
+        const normal = new THREE.Vector3(0, 0, 1).applyEuler(targetPose.rot);
+        const dotCamera = normal.dot(toCam);
+
+        // Prominent Central Focus Zone:
+        // As photos drift into the center, magnify AND move them closer toward camera!
+        const focus = calculateFocusEffect(finalX, finalY, dotCamera > -0.2);
+        finalZ += focus.zAdvance;
+
+        // Lift hovered card forward to guarantee top layer hierarchy
+        if (card.isHovered) {
+          finalZ += 0.55;
+        }
+
+        // Boundary unwrap protection: if periodic wrap occurred, adjust current spring position
+        // so the card continues seamlessly rather than leaping across the screen
+        if (activeStageName === 'GRID' || activeStageName === 'HELIX') {
+          const span = activeStageName === 'GRID' ? Math.max(8.0, Math.ceil(total / 4) * 2.85) : 11.0;
+          card.springPos.y.value = unwrapSpringBoundary(card.springPos.y.value, finalY, span);
+        } else if (activeStageName === 'WAVE') {
+          const waveSpan = Math.max(12.0, Math.ceil(total / 3) * 4.2);
+          card.springPos.x.value = unwrapSpringBoundary(card.springPos.x.value, finalX, waveSpan);
+        }
+
+        card.springPos.setTarget(finalX, finalY, finalZ);
+
+        // Compute Facing Viewer Quaternion Correction (Billboarding)
+        // 1. Base orientation from layout
+        this.qBase.setFromEuler(targetPose.rot);
+
+        // 2. Direct look-at camera quaternion (with Y 180 flip since card front is +Z)
+        const cardPos = new THREE.Vector3(finalX, finalY, finalZ);
+        this.lookMatrix.lookAt(cardPos, cameraPos, this.upVec);
+        this.qLook.setFromRotationMatrix(this.lookMatrix);
+        this.qLook.multiply(this.qY180);
+
+        // Calculate facing weight and back-culling opacity
+        const { weight: facingWeight, opacity: facingOpacity } = calculateFacingWeight(
+          activeStageName,
+          finalX,
+          finalY,
+          dotCamera,
+          card.isHovered,
+          focus.focusWeight
+        );
+
+        targetOpacity = Math.min(targetOpacity, facingOpacity);
+
+        // Slerp between base layout rotation and facing-camera orientation
+        card.quaternionTarget.slerpQuaternions(this.qBase, this.qLook, facingWeight);
+
+        const hoverScale = card.isHovered ? 1.15 : 1.0;
+        card.springScale.setTarget(focus.scaleBonus * hoverScale);
       }
 
+      // Update position spring
       const curPos = card.springPos.update(dt);
       card.mesh.position.set(curPos.x, curPos.y, curPos.z);
 
-      const curRot = card.springRot.update(dt);
-      card.mesh.rotation.set(curRot.x, curRot.y, curRot.z);
+      // Smoothly slerp card orientation
+      if (!card.isSelected) {
+        card.mesh.quaternion.slerp(card.quaternionTarget, Math.min(1.0, dt * 10));
+      } else {
+        const curRot = card.springRot.update(dt);
+        card.mesh.rotation.set(curRot.x, curRot.y, curRot.z);
+      }
 
+      // Update scale spring
       const curScale = card.springScale.update(dt);
       card.mesh.scale.set(curScale, curScale, curScale);
+
+      card.mesh.material.opacity = targetOpacity * entranceOp;
+      if (!card.isSelected) {
+        (card.rimLine.material as THREE.LineBasicMaterial).opacity =
+          entranceOp * (card.isHovered ? 0.95 : 0.22);
+      }
     });
 
     if (this.onMorphProgressCallback) {
-      const stageIdx = Math.min(Math.round(this.currentMorphFactor), 4);
-      this.onMorphProgressCallback(this.currentMorphFactor, LAYOUT_NAMES[stageIdx]);
+      this.onMorphProgressCallback(this.currentMorphFactor, activeStageName);
     }
 
     this.renderer.render(this.scene, this.camera);
   }
 
   public dispose() {
+    if (this.clickTimeoutId !== null) {
+      clearTimeout(this.clickTimeoutId);
+      this.clickTimeoutId = null;
+    }
     if (this.animId !== null) {
       cancelAnimationFrame(this.animId);
     }
     this.cards.forEach((c) => {
+      this.cardGroup.remove(c.mesh);
       c.mesh.geometry.dispose();
       c.mesh.material.dispose();
       c.rimLine.geometry.dispose();

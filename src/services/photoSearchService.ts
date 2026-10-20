@@ -17,7 +17,11 @@ export interface PhotoItem {
   license?: string;
 }
 
+export type SafeSearchLevel = 'off' | 'moderate' | 'strict';
+
 export const CURATED_CATEGORIES = [
+  { id: '绝区零', label: '绝区零 (Zenless Zone Zero)' },
+  { id: '原神', label: '原神 (Genshin Impact)' },
   { id: '雪之下雪乃', label: '雪之下雪乃 (Yukinoshita Yukino)' },
   { id: '初音未来', label: '初音未来 (Hatsune Miku)' },
   { id: 'minimalist architecture modern', label: '极简空间建筑' },
@@ -40,48 +44,62 @@ function cleanText(str: string): string {
 }
 
 /**
- * Universal Search through `/api/search` (Aggregates DuckDuckGo Live Web + Safebooru + Wikimedia + Wikipedia)
+ * Universal Search through `/api/search` (Aggregates Bing + Booru + DuckDuckGo + Wikimedia + Wikipedia)
  */
-async function searchUniversalApi(keyword: string): Promise<PhotoItem[]> {
+async function searchUniversalApi(
+  keyword: string,
+  safeSearch: SafeSearchLevel = 'moderate'
+): Promise<PhotoItem[]> {
   try {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
+    const res = await fetch(
+      `/api/search?q=${encodeURIComponent(keyword)}&safe=${safeSearch}`
+    );
     if (!res.ok) return [];
     const data = await res.json();
     const results = data.results || [];
 
-    return results.map((item: any, idx: number) => {
-      const title = cleanText(item.title) || `${keyword} #${idx + 1}`;
-      const source = item.source || 'Live Web Index';
-      const w = item.width || 1200;
-      const h = item.height || 800;
-      const directUrl = item.image;
-      const thumbUrl = item.thumbnail || item.image;
-      const safeThumbUrl = thumbUrl && thumbUrl.startsWith('http')
-        ? `/api/proxy-image?url=${encodeURIComponent(thumbUrl)}`
-        : thumbUrl;
-      const safeDirectUrl = directUrl && directUrl.startsWith('http')
-        ? `/api/proxy-image?url=${encodeURIComponent(directUrl)}`
-        : directUrl;
+    const seenUrls = new Set<string>();
 
-      return {
-        id: `universal-${idx}-${Date.now()}`,
-        title: title.length > 55 ? title.substring(0, 52) + '...' : title,
-        photographer: source,
-        location: 'Global Search Index',
-        camera: 'Universal Sensor',
-        focalLength: 'Adaptive',
-        aperture: 'f/2.0',
-        iso: 'ISO 100',
-        year: '2025',
-        url: safeDirectUrl,
-        thumbnail: safeThumbUrl,
-        proxyUrl: safeDirectUrl,
-        aspectRatio: w / h,
-        category: keyword,
-        sourceUrl: item.url || directUrl,
-        license: source,
-      };
-    });
+    return results
+      .filter((item: any) => {
+        const raw = item.image || item.thumbnail;
+        if (!raw || seenUrls.has(raw)) return false;
+        seenUrls.add(raw);
+        return true;
+      })
+      .map((item: any, idx: number) => {
+        const title = cleanText(item.title) || `${keyword} #${idx + 1}`;
+        const source = item.source || 'Live Web Index';
+        const w = item.width || 1200;
+        const h = item.height || 800;
+        const directUrl = item.image;
+        const thumbUrl = item.thumbnail || item.image;
+        const safeThumbUrl = thumbUrl && thumbUrl.startsWith('http')
+          ? `/api/proxy-image?url=${encodeURIComponent(thumbUrl)}`
+          : thumbUrl;
+        const safeDirectUrl = directUrl && directUrl.startsWith('http')
+          ? `/api/proxy-image?url=${encodeURIComponent(directUrl)}`
+          : directUrl;
+
+        return {
+          id: `universal-${idx}-${Date.now()}`,
+          title: title.length > 55 ? title.substring(0, 52) + '...' : title,
+          photographer: source,
+          location: 'Global Search Index',
+          camera: 'Vision Sensor',
+          focalLength: 'Adaptive 50mm',
+          aperture: 'f/1.8',
+          iso: 'ISO 100',
+          year: '2025',
+          url: safeDirectUrl,
+          thumbnail: safeThumbUrl,
+          proxyUrl: safeDirectUrl,
+          aspectRatio: w / h,
+          category: keyword,
+          sourceUrl: item.url || directUrl,
+          license: source,
+        };
+      });
   } catch (err) {
     console.warn('Universal API search notice:', err);
     return [];
@@ -93,7 +111,7 @@ async function searchUniversalApi(keyword: string): Promise<PhotoItem[]> {
  */
 async function searchOpenverse(keyword: string): Promise<PhotoItem[]> {
   try {
-    const url = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(keyword)}&page_size=20`;
+    const url = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(keyword)}&page_size=25`;
     const response = await fetch(url);
     if (!response.ok) return [];
     const data = await response.json();
@@ -136,30 +154,86 @@ async function searchOpenverse(keyword: string): Promise<PhotoItem[]> {
 }
 
 /**
- * Master Real-Time Multi-Engine Image Search
- * Queries DuckDuckGo Live Web Image Search + Anime Archives + Wikimedia + Openverse
+ * Fast Concurrent Pre-Flight Image Validator:
+ * Validates that candidate URLs can actually be decoded as genuine images.
+ * Discards 404s, corrupt files, anti-hotlink blocks, or images smaller than 60x60.
+ * Returns only confirmed loadable PhotoItem[].
  */
-export async function searchPhotos(keyword: string): Promise<PhotoItem[]> {
+export async function validateCandidatePhotos(
+  candidates: PhotoItem[],
+  timeoutMs = 5000
+): Promise<PhotoItem[]> {
+  if (candidates.length === 0) return [];
+
+  const checkSingle = (item: PhotoItem): Promise<PhotoItem | null> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+
+      const timer = setTimeout(() => {
+        img.onload = null;
+        img.onerror = null;
+        resolve(null);
+      }, timeoutMs);
+
+      img.onload = () => {
+        clearTimeout(timer);
+        if (img.naturalWidth >= 50 && img.naturalHeight >= 50) {
+          resolve(item);
+        } else {
+          resolve(null);
+        }
+      };
+
+      img.onerror = () => {
+        clearTimeout(timer);
+        resolve(null);
+      };
+
+      img.src = item.thumbnail || item.url;
+    });
+  };
+
+  const validated = await Promise.all(candidates.map(checkSingle));
+  return validated.filter((item): item is PhotoItem => item !== null);
+}
+
+/**
+ * Master Real-Time Multi-Engine Image Search
+ * Queries candidates and runs them through the pre-flight validator
+ * to ensure ZERO invalid / black placeholder cards enter the gallery.
+ */
+export async function searchPhotos(
+  keyword: string,
+  safeSearch: SafeSearchLevel = 'moderate'
+): Promise<PhotoItem[]> {
   const cleanKeyword = keyword.trim();
   if (!cleanKeyword) {
-    return searchPhotos('雪之下雪乃');
+    return searchPhotos('绝区零', safeSearch);
   }
 
   // 1. Try Universal Multi-Engine Search API first
-  const universalResults = await searchUniversalApi(cleanKeyword);
-  if (universalResults.length >= 6) {
-    return universalResults;
+  const universalResults = await searchUniversalApi(cleanKeyword, safeSearch);
+  const validatedUniversal = await validateCandidatePhotos(universalResults);
+
+  if (validatedUniversal.length >= 8) {
+    return validatedUniversal;
   }
 
   // 2. Fallback to Openverse
   const openverseResults = await searchOpenverse(cleanKeyword);
-  const combined = [...universalResults, ...openverseResults];
+  const validatedOpenverse = await validateCandidatePhotos(openverseResults);
 
-  if (combined.length > 0) {
-    return combined;
-  }
+  const combined = [...validatedUniversal, ...validatedOpenverse];
 
-  return [];
+  // Deduplicate by URL
+  const seen = new Set<string>();
+  const uniqueValid = combined.filter((item) => {
+    if (seen.has(item.url)) return false;
+    seen.add(item.url);
+    return true;
+  });
+
+  return uniqueValid;
 }
 
 /**

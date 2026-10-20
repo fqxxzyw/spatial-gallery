@@ -1,16 +1,30 @@
 import React, { useState } from 'react';
-import { Search, X, Upload, Sparkles, Loader2, Globe } from 'lucide-react';
+import {
+  Search,
+  X,
+  Upload,
+  Sparkles,
+  Loader2,
+  Globe,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+} from 'lucide-react';
 import { spatialAudio } from '../../utils/audio';
+import { SafeSearchLevel } from '../../services/photoSearchService';
 
 interface SearchOverlayProps {
   isOpen: boolean;
   onClose: () => void;
-  onSearch: (keyword: string) => Promise<void>;
+  onSearch: (keyword: string, safeSearch?: SafeSearchLevel) => Promise<void>;
   onFilesSelected: (files: FileList) => void;
   isSearching: boolean;
+  safeSearch: SafeSearchLevel;
+  onSafeSearchChange: (level: SafeSearchLevel) => void;
 }
 
 const PRESET_TOPICS = [
+  '原神',
   '雪之下雪乃',
   '初音未来',
   '吉卜力风光',
@@ -27,6 +41,8 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
   onSearch,
   onFilesSelected,
   isSearching,
+  safeSearch,
+  onSafeSearchChange,
 }) => {
   const [query, setQuery] = useState('');
   const [isDragging, setIsDragging] = useState(false);
@@ -37,7 +53,7 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
     e.preventDefault();
     if (!query.trim() || isSearching) return;
     spatialAudio.playTactileTick();
-    await onSearch(query.trim());
+    await onSearch(query.trim(), safeSearch);
     onClose();
   };
 
@@ -45,7 +61,7 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
     if (isSearching) return;
     spatialAudio.playTactileTick();
     setQuery(topic);
-    await onSearch(topic);
+    await onSearch(topic, safeSearch);
     onClose();
   };
 
@@ -68,6 +84,40 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
     }
   };
 
+  const safeOptions: {
+    level: SafeSearchLevel;
+    label: string;
+    desc: string;
+    badge: string;
+    icon: React.ReactNode;
+    activeClass: string;
+  }[] = [
+    {
+      level: 'off',
+      label: '关闭',
+      badge: '全部图片',
+      desc: '关闭安全限制，全网无过滤搜索全部真实原图',
+      icon: <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />,
+      activeClass: 'bg-amber-500/20 border-amber-500/40 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.25)]',
+    },
+    {
+      level: 'moderate',
+      label: '中等',
+      badge: '推荐平衡',
+      desc: '适度安全限制，过滤极度敏感内容，兼顾丰富度',
+      icon: <Shield className="w-3.5 h-3.5 text-sky-400" />,
+      activeClass: 'bg-white/15 border-white/30 text-white shadow-[0_0_12px_rgba(255,255,255,0.15)]',
+    },
+    {
+      level: 'strict',
+      label: '严格',
+      badge: '全年龄合规',
+      desc: '严格安全过滤，仅限严格全年龄健康合规内容',
+      icon: <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />,
+      activeClass: 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.25)]',
+    },
+  ];
+
   return (
     <div
       onClick={onClose}
@@ -75,13 +125,13 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-lg liquid-glass rounded-3xl p-6 shadow-2xl space-y-5"
+        className="w-full max-w-lg liquid-glass rounded-3xl p-6 shadow-2xl space-y-4"
       >
         {/* Search Header & Live Badge */}
         <div className="flex items-center justify-between text-xs text-[#86868B]">
           <div className="flex items-center space-x-1.5 text-white/90 font-medium">
             <Globe className="w-3.5 h-3.5 text-emerald-400" />
-            <span>全网真实图像搜索引擎（动漫 / 摄影 / 艺术 / 风光）</span>
+            <span>全网真实图像搜索引擎</span>
           </div>
 
           <button onClick={onClose} className="text-[#86868B] hover:text-white">
@@ -96,7 +146,7 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索任何真实照片（如：雪之下雪乃、初音未来、雪山、猫咪）..."
+            placeholder="搜索任何真实照片（如：原神、雪之下雪乃、初音未来、雪山、猫咪）..."
             autoFocus
             disabled={isSearching}
             className="w-full bg-white/5 border border-white/10 rounded-full pl-11 pr-12 py-3 text-sm text-[#F5F5F7] placeholder-[#86868B] focus:outline-none focus:border-white/30 focus:bg-white/10 transition-all disabled:opacity-50"
@@ -116,11 +166,57 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
           ) : null}
         </form>
 
+        {/* SafeSearch Level Segmented Control */}
+        <div className="space-y-1.5 p-3 rounded-2xl bg-white/[0.03] border border-white/10">
+          <div className="flex items-center justify-between text-[11px] text-[#86868B] px-1">
+            <span className="font-medium text-white/80 flex items-center gap-1.5">
+              <Shield className="w-3.5 h-3.5 text-cyan-400" />
+              安全限制 (SafeSearch)
+            </span>
+            <span className="text-[10px] text-white/50">与浏览器搜索引擎完全一致</span>
+          </div>
+
+          {/* 3-Segment Pills */}
+          <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/30 border border-white/5">
+            {safeOptions.map((opt) => {
+              const isSelected = safeSearch === opt.level;
+              return (
+                <button
+                  key={opt.level}
+                  type="button"
+                  onClick={() => {
+                    spatialAudio.playTactileTick();
+                    onSafeSearchChange(opt.level);
+                  }}
+                  className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
+                    isSelected
+                      ? opt.activeClass
+                      : 'border-transparent text-[#86868B] hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    {opt.icon}
+                    <span>{opt.label}</span>
+                  </div>
+                  <span className="text-[10px] scale-90 text-white/60 mt-0.5">
+                    {opt.badge}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Current SafeSearch explanation */}
+          <p className="text-[11px] text-white/65 px-1 pt-0.5 leading-relaxed">
+            {safeOptions.find((o) => o.level === safeSearch)?.desc}
+          </p>
+        </div>
+
         {/* Live Loading Prompt */}
         {isSearching && (
           <div className="flex items-center justify-center space-x-2 py-2 text-xs text-white/70">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>连接全球多引擎检索真实照片并载入 3D 空间...</span>
+            <span>正在连接全球多引擎检索真实照片并载入 3D 空间...</span>
           </div>
         )}
 

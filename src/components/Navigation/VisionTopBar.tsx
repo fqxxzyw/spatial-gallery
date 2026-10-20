@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Search, Upload, Volume2, VolumeX, HelpCircle, Video, VideoOff } from 'lucide-react';
-import { CURATED_CATEGORIES } from '../../services/photoSearchService';
+import { Search, Upload, Volume2, VolumeX, HelpCircle, Video, VideoOff, Shield } from 'lucide-react';
+import { CURATED_CATEGORIES, SafeSearchLevel } from '../../services/photoSearchService';
 import { spatialAudio } from '../../utils/audio';
 
 interface VisionTopBarProps {
@@ -13,7 +13,7 @@ interface VisionTopBarProps {
   onOpenGuide: () => void;
   isCameraRunning: boolean;
   onToggleCamera: () => void;
-  gestureStatusText: string;
+  safeSearch?: SafeSearchLevel;
 }
 
 export const VisionTopBar: React.FC<VisionTopBarProps> = ({
@@ -26,12 +26,12 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
   onOpenGuide,
   isCameraRunning,
   onToggleCamera,
-  gestureStatusText,
+  safeSearch = 'off',
 }) => {
   const [showCategoryMenu, setShowCategoryMenu] = useState(false);
 
   const activeCategoryLabel =
-    CURATED_CATEGORIES.find((c) => c.id === currentCategory)?.label || 'All Photos';
+    CURATED_CATEGORIES.find((c) => c.id === currentCategory)?.label || currentCategory || 'Spatial Photos';
 
   return (
     <header className="fixed top-5 left-0 right-0 z-30 pointer-events-none flex items-center justify-between px-6 select-none">
@@ -56,7 +56,7 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
           </button>
 
           {showCategoryMenu && (
-            <div className="absolute top-8 left-0 w-48 liquid-glass rounded-2xl p-1.5 shadow-2xl z-50">
+            <div className="absolute top-8 left-0 w-52 liquid-glass rounded-2xl p-1.5 shadow-2xl z-50">
               {CURATED_CATEGORIES.map((cat) => (
                 <button
                   key={cat.id}
@@ -79,26 +79,29 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
         </div>
       </div>
 
-      {/* Center: Subtle Gesture State Status */}
-      <div className="pointer-events-auto hidden md:flex items-center space-x-2 liquid-glass-subtle px-3.5 py-1.5 rounded-full text-xs text-[#86868B]">
-        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400/80 animate-pulse" />
-        <span className="text-[#F5F5F7] font-medium tracking-normal text-[12px]">
-          {gestureStatusText}
-        </span>
-      </div>
-
       {/* Right: Search, Upload & Utility Actions */}
-      <div className="pointer-events-auto flex items-center space-x-2">
-        {/* Search button */}
+      <div className="pointer-events-auto flex items-center space-x-1.5 sm:space-x-2">
+        {/* Search button with SafeSearch indicator */}
         <button
           onClick={() => {
             spatialAudio.playTactileTick();
             onOpenSearch();
           }}
-          className="liquid-glass p-2.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95"
-          title="Search Photographs"
+          className="liquid-glass px-3 py-2 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95 flex items-center space-x-1.5"
+          title={`点击搜索图片 (当前安全限制: ${
+            safeSearch === 'off' ? '关闭' : safeSearch === 'strict' ? '严格' : '中等'
+          })`}
         >
-          <Search className="w-4 h-4" />
+          <Search className="w-3.5 h-3.5 text-white/90" />
+          <span className="hidden sm:inline text-[11px] font-medium text-white/70">
+            {safeSearch === 'off' ? (
+              <span className="text-amber-300 font-normal">安全: 关闭</span>
+            ) : safeSearch === 'strict' ? (
+              <span className="text-emerald-300 font-normal">安全: 严格</span>
+            ) : (
+              <span>安全: 中等</span>
+            )}
+          </span>
         </button>
 
         {/* Local Photo Upload button */}
@@ -107,7 +110,7 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
             spatialAudio.playTactileTick();
             onUploadClick();
           }}
-          className="liquid-glass p-2.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95"
+          className="hidden sm:flex liquid-glass p-2.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95"
           title="Import Local Photos"
         >
           <Upload className="w-4 h-4" />
@@ -119,7 +122,7 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
             spatialAudio.playTactileTick();
             onToggleCamera();
           }}
-          className={`liquid-glass p-2.5 rounded-full transition-all shadow-lg active:scale-95 ${
+          className={`hidden sm:flex liquid-glass p-2.5 rounded-full transition-all shadow-lg active:scale-95 ${
             isCameraRunning ? 'text-white bg-white/10' : 'text-[#86868B] hover:text-white'
           }`}
           title={isCameraRunning ? 'Optical Tracking Active' : 'Enable Camera Gestures'}
@@ -132,7 +135,7 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
           onClick={() => {
             onToggleMute();
           }}
-          className="liquid-glass p-2.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95"
+          className="liquid-glass p-2 sm:p-2.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95"
           title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
         >
           {isMuted ? <VolumeX className="w-4 h-4 text-white/40" /> : <Volume2 className="w-4 h-4" />}
@@ -144,7 +147,7 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
             spatialAudio.playTactileTick();
             onOpenGuide();
           }}
-          className="liquid-glass p-2.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95"
+          className="hidden md:flex liquid-glass p-2.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95"
           title="Gesture Guide"
         >
           <HelpCircle className="w-4 h-4" />

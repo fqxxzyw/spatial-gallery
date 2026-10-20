@@ -34,23 +34,23 @@ export const MorphControlBar: React.FC<MorphControlBarProps> = ({
   const currentNearestIndex = Math.round(currentFactor);
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-3 select-none">
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center space-x-2 sm:space-x-3 select-none max-w-[96vw]">
       {/* Morph Navigation Capsule */}
-      <div className="liquid-glass rounded-full px-3 py-1.5 flex items-center space-x-2 shadow-2xl">
+      <div className="liquid-glass rounded-full px-2 sm:px-3 py-1 sm:py-1.5 flex items-center space-x-1 sm:space-x-2 shadow-2xl">
         {/* Step Prev */}
         <button
           onClick={() => {
             spatialAudio.playTactileTick();
             onPrevMorph();
           }}
-          className="p-1.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all active:scale-95"
+          className="p-1 sm:p-1.5 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all active:scale-95"
           title="Previous Form (Swipe Left)"
         >
-          <ChevronLeft className="w-4 h-4" />
+          <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
         </button>
 
         {/* Morph Stage Pills */}
-        <div className="flex items-center space-x-1">
+        <div className="flex items-center space-x-0.5 sm:space-x-1">
           {MORPH_STAGES.map((stage) => {
             const isActive = currentNearestIndex === stage.id;
             return (
@@ -60,7 +60,7 @@ export const MorphControlBar: React.FC<MorphControlBarProps> = ({
                   spatialAudio.playTactileTick();
                   onSetMorphFactor(stage.id);
                 }}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                className={`px-2 sm:px-3 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-medium transition-all ${
                   isActive
                     ? 'bg-white/20 text-white shadow-sm'
                     : 'text-[#86868B] hover:text-white hover:bg-white/5'

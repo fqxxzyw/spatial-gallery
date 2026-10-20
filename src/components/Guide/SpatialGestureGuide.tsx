@@ -101,14 +101,14 @@ export const SpatialGestureGuide: React.FC<SpatialGestureGuideProps> = ({ isOpen
             </p>
           </div>
 
-          {/* 6. 握拳缩小整个视图 */}
+          {/* 6. 握拳/下滑关闭单张照片 */}
           <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 space-y-1.5">
             <div className="flex items-center space-x-2 text-white font-medium">
               <span className="text-lg">✊</span>
-              <span>握紧拳头 · 拉远缩小视图</span>
+              <span>握拳/下滑 · 关闭单张照片</span>
             </div>
             <p className="text-[#86868B] leading-relaxed text-[11px]">
-              握起拳头，视角连续拉远后撤，远距离总览宏大画卷；亦可快速退出大图查看。
+              照片放大展示时，<span className="text-white">握紧拳头、单手轻扫下滑或双手合拢</span>，即可瞬间退出大图，让照片无缝回到照片墙原位。
             </p>
           </div>
 
@@ -149,11 +149,11 @@ export const SpatialGestureGuide: React.FC<SpatialGestureGuideProps> = ({ isOpen
             </div>
             <div>
               <span className="text-white block font-medium">单击照片</span>
-              <span>放大展示</span>
+              <span>放大展示 / 再次单击关闭</span>
             </div>
             <div>
-              <span className="text-white block font-medium">拖拽 / 右键</span>
-              <span>平移旋转空间</span>
+              <span className="text-white block font-medium">双击照片</span>
+              <span>放大局部细节 / 拖拽漫游</span>
             </div>
             <div>
               <span className="text-white block font-medium">滚轮 / 空格</span>
