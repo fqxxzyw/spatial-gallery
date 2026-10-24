@@ -1,6 +1,6 @@
 # 🌌 Spatial Gallery — 极简空间手势照片浏览器
 
-[GitHub Pages 在线使用](https://fqxxzyw.github.io/spatial-gallery/)
+[GitHub Pages 在线页面](https://fqxxzyw.github.io/spatial-gallery/)
 
 > **"Less Interface, More Interaction. 让照片成为主角，让界面尽可能隐形，让操作符合真实世界的物理直觉。"**
 
@@ -109,8 +109,12 @@ npm run lint
 npm run build
 ```
 
-## GitHub Pages
+## 部署说明
 
-推送 main 后自动部署。Pages 构建设置 `VITE_STATIC_HOST=true`，使用 Wikimedia Commons 和 Openverse 浏览器直连搜索；只接受允许跨域且能加载的图片，不提供原服务器的全网聚合搜索和图片代理。动漫词条可能没有结果，可导入本地照片。
+本项目已恢复为用户提供的原版，保留全网聚合搜索、图片代理与“关闭 / 中等 / 严格”安全搜索选项。
 
-`npm run dev` 仍运行原有 Express 服务。需要完整在线搜索时，另行部署 `server.ts`，并在 Pages 构建环境设置 `VITE_API_BASE_URL` 为允许跨域的 HTTPS 服务地址。不要把私密密钥写入 VITE 环境变量。
+GitHub Pages 仅部署前端，不运行 `server.ts`。目前 Pages 尚未接入搜索后端，在线搜索及过滤不会生效；本地照片导入和前端交互可独立运行。不能通过显示过滤按钮来替代后端。
+
+完整运行：使用 Node.js 24，执行 `npm ci`、`npm run dev`，打开 http://localhost:3000 。线上完整部署需要运行该 Node.js 服务，并为前端提供同源 `/api/search` 与 `/api/proxy-image`。安全搜索是上游图片源的筛选参数，不保证所有图片来源都有相同过滤能力。
+
+main 分支推送会自动构建并发布 Pages。保留仓库子路径配置及兼容 Vite 的 esbuild 依赖修复。

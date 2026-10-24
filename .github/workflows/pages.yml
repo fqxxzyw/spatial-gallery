@@ -23,7 +23,6 @@ jobs:
       - run: npm run build
         env:
           BASE_PATH: /${{ github.event.repository.name }}/
-          VITE_STATIC_HOST: "true"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -11,7 +11,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { spatialAudio } from '../../utils/audio';
-import { SafeSearchLevel, STATIC_HOST } from '../../services/photoSearchService';
+import { SafeSearchLevel } from '../../services/photoSearchService';
 
 interface SearchOverlayProps {
   isOpen: boolean;
@@ -131,7 +131,7 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
         <div className="flex items-center justify-between text-xs text-[#86868B]">
           <div className="flex items-center space-x-1.5 text-white/90 font-medium">
             <Globe className="w-3.5 h-3.5 text-emerald-400" />
-            <span>{STATIC_HOST ? '开放图库搜索 · Wikimedia / Openverse' : '全网真实图像搜索引擎'}</span>
+            <span>全网真实图像搜索引擎</span>
           </div>
 
           <button onClick={onClose} className="text-[#86868B] hover:text-white">
@@ -139,7 +139,6 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
           </button>
         </div>
 
-        {STATIC_HOST && <p className="text-xs text-[#86868B]">网页版搜索开放图库，动漫图片可能较少。也可以导入本地照片；搜索结果以图片源和浏览器可加载的图片为准。</p>}
         {/* Search Input Form */}
         <form onSubmit={handleSubmit} className="relative">
           <Search className="absolute left-4 top-3.5 w-4 h-4 text-[#86868B]" />
@@ -167,14 +166,14 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
           ) : null}
         </form>
 
-        {/* SafeSearch is available only with the search server. */}
-        {!STATIC_HOST && <div className="space-y-1.5 p-3 rounded-2xl bg-white/[0.03] border border-white/10">
+        {/* SafeSearch Level Segmented Control */}
+        <div className="space-y-1.5 p-3 rounded-2xl bg-white/[0.03] border border-white/10">
           <div className="flex items-center justify-between text-[11px] text-[#86868B] px-1">
             <span className="font-medium text-white/80 flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-cyan-400" />
               安全限制 (SafeSearch)
             </span>
-            <span className="text-[10px] text-white/50">过滤能力取决于图片来源</span>
+            <span className="text-[10px] text-white/50">与浏览器搜索引擎完全一致</span>
           </div>
 
           {/* 3-Segment Pills */}
@@ -211,7 +210,7 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
           <p className="text-[11px] text-white/65 px-1 pt-0.5 leading-relaxed">
             {safeOptions.find((o) => o.level === safeSearch)?.desc}
           </p>
-        </div>}
+        </div>
 
         {/* Live Loading Prompt */}
         {isSearching && (

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PhotoItem, imageUrl } from '../../services/photoSearchService';
+import { PhotoItem } from '../../services/photoSearchService';
 
 const textureCache = new Map<string, THREE.CanvasTexture>();
 
@@ -162,7 +162,7 @@ export function createPhotoCardTexture(
 
   let hasRetriedProxy = false;
   const primarySrc = photo.thumbnail || photo.url;
-  const proxySrc = photo.proxyUrl || imageUrl(photo.url || photo.thumbnail);
+  const proxySrc = photo.proxyUrl || `/api/proxy-image?url=${encodeURIComponent(photo.url || photo.thumbnail)}`;
 
   img.src = primarySrc;
 
