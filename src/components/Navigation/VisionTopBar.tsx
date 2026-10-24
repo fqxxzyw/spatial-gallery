@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Search, Upload, Volume2, VolumeX, HelpCircle, Video, VideoOff, Shield } from 'lucide-react';
-import { CURATED_CATEGORIES, SafeSearchLevel } from '../../services/photoSearchService';
+import { CURATED_CATEGORIES, SafeSearchLevel, STATIC_HOST } from '../../services/photoSearchService';
 import { spatialAudio } from '../../utils/audio';
 
 interface VisionTopBarProps {
@@ -88,13 +88,13 @@ export const VisionTopBar: React.FC<VisionTopBarProps> = ({
             onOpenSearch();
           }}
           className="liquid-glass px-3 py-2 rounded-full hover:bg-white/10 text-[#86868B] hover:text-white transition-all shadow-lg active:scale-95 flex items-center space-x-1.5"
-          title={`点击搜索图片 (当前安全限制: ${
+          title={STATIC_HOST ? '搜索开放图库' : `点击搜索图片 (当前安全限制: ${
             safeSearch === 'off' ? '关闭' : safeSearch === 'strict' ? '严格' : '中等'
           })`}
         >
           <Search className="w-3.5 h-3.5 text-white/90" />
           <span className="hidden sm:inline text-[11px] font-medium text-white/70">
-            {safeSearch === 'off' ? (
+            {STATIC_HOST ? <span>搜索图库</span> : safeSearch === 'off' ? (
               <span className="text-amber-300 font-normal">安全: 关闭</span>
             ) : safeSearch === 'strict' ? (
               <span className="text-emerald-300 font-normal">安全: 严格</span>

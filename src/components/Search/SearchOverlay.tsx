@@ -167,8 +167,8 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
           ) : null}
         </form>
 
-        {/* SafeSearch Level Segmented Control */}
-        <div className="space-y-1.5 p-3 rounded-2xl bg-white/[0.03] border border-white/10">
+        {/* SafeSearch is available only with the search server. */}
+        {!STATIC_HOST && <div className="space-y-1.5 p-3 rounded-2xl bg-white/[0.03] border border-white/10">
           <div className="flex items-center justify-between text-[11px] text-[#86868B] px-1">
             <span className="font-medium text-white/80 flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-cyan-400" />
@@ -179,7 +179,7 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
 
           {/* 3-Segment Pills */}
           <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/30 border border-white/5">
-            {(STATIC_HOST ? [] : safeOptions).map((opt) => {
+            {safeOptions.map((opt) => {
               const isSelected = safeSearch === opt.level;
               return (
                 <button
@@ -209,9 +209,9 @@ export const SearchOverlay: React.FC<SearchOverlayProps> = ({
 
           {/* Current SafeSearch explanation */}
           <p className="text-[11px] text-white/65 px-1 pt-0.5 leading-relaxed">
-            {STATIC_HOST ? '开放图库按来源提供内容，未使用服务器端 SafeSearch。' : safeOptions.find((o) => o.level === safeSearch)?.desc}
+            {safeOptions.find((o) => o.level === safeSearch)?.desc}
           </p>
-        </div>
+        </div>}
 
         {/* Live Loading Prompt */}
         {isSearching && (

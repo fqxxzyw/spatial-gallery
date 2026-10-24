@@ -1,5 +1,5 @@
-export const STATIC_HOST = import.meta.env.VITE_STATIC_HOST === 'true';
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+export const STATIC_HOST = import.meta.env.VITE_STATIC_HOST === 'true' && !API_BASE;
 const HAS_API = !STATIC_HOST || Boolean(API_BASE);
 export function imageUrl(url: string): string {
   return HAS_API && /^https?:/.test(url)
@@ -154,6 +154,14 @@ async function searchOpenverse(keyword: string): Promise<PhotoItem[]> {
   }
 }
 
+function openArchiveKeyword(keyword: string): string {
+  const aliases: Record<string, string> = {
+    '原神': 'Genshin Impact', '绝区零': 'Zenless Zone Zero',
+    '雪之下雪乃': 'Yukinoshita Yukino', '初音未来': 'Hatsune Miku',
+  };
+  return aliases[keyword] || keyword;
+}
+
 async function searchCommons(keyword: string): Promise<PhotoItem[]> {
   try {
     const params = new URLSearchParams({ action: 'query', generator: 'search',
@@ -238,7 +246,7 @@ export async function searchPhotos(
   // 1. Try Universal Multi-Engine Search API first
   const universalResults = HAS_API
     ? await searchUniversalApi(cleanKeyword, safeSearch)
-    : await searchCommons(cleanKeyword);
+    : await searchCommons(openArchiveKeyword(cleanKeyword));
   const validatedUniversal = await validateCandidatePhotos(universalResults);
 
   if (validatedUniversal.length >= 8) {
@@ -246,7 +254,7 @@ export async function searchPhotos(
   }
 
   // 2. Fallback to Openverse
-  const openverseResults = await searchOpenverse(cleanKeyword);
+  const openverseResults = await searchOpenverse(STATIC_HOST ? openArchiveKeyword(cleanKeyword) : cleanKeyword);
   const validatedOpenverse = await validateCandidatePhotos(openverseResults);
 
   const combined = [...validatedUniversal, ...validatedOpenverse];
