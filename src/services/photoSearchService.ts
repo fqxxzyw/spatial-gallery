@@ -1,3 +1,11 @@
+export const STATIC_HOST = import.meta.env.VITE_STATIC_HOST === 'true';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const HAS_API = !STATIC_HOST || Boolean(API_BASE);
+export function imageUrl(url: string): string {
+  return HAS_API && /^https?:/.test(url)
+    ? `${API_BASE}/api/proxy-image?url=${encodeURIComponent(url)}` : url;
+}
+
 export interface PhotoItem {
   id: string;
   title: string;
@@ -50,9 +58,10 @@ async function searchUniversalApi(
   keyword: string,
   safeSearch: SafeSearchLevel = 'moderate'
 ): Promise<PhotoItem[]> {
+  if (!HAS_API) return [];
   try {
     const res = await fetch(
-      `/api/search?q=${encodeURIComponent(keyword)}&safe=${safeSearch}`
+      `${API_BASE}/api/search?q=${encodeURIComponent(keyword)}&safe=${safeSearch}`, { signal: AbortSignal.timeout(10000) }
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -74,12 +83,8 @@ async function searchUniversalApi(
         const h = item.height || 800;
         const directUrl = item.image;
         const thumbUrl = item.thumbnail || item.image;
-        const safeThumbUrl = thumbUrl && thumbUrl.startsWith('http')
-          ? `/api/proxy-image?url=${encodeURIComponent(thumbUrl)}`
-          : thumbUrl;
-        const safeDirectUrl = directUrl && directUrl.startsWith('http')
-          ? `/api/proxy-image?url=${encodeURIComponent(directUrl)}`
-          : directUrl;
+        const safeThumbUrl = imageUrl(thumbUrl);
+        const safeDirectUrl = imageUrl(directUrl);
 
         return {
           id: `universal-${idx}-${Date.now()}`,
@@ -112,7 +117,7 @@ async function searchUniversalApi(
 async function searchOpenverse(keyword: string): Promise<PhotoItem[]> {
   try {
     const url = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(keyword)}&page_size=25`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!response.ok) return [];
     const data = await response.json();
     const results = data.results || [];
@@ -122,12 +127,8 @@ async function searchOpenverse(keyword: string): Promise<PhotoItem[]> {
       .map((item: any, idx: number) => {
         const directUrl = item.url;
         const thumbUrl = item.thumbnail || item.url;
-        const safeThumb = thumbUrl && thumbUrl.startsWith('http')
-          ? `/api/proxy-image?url=${encodeURIComponent(thumbUrl)}`
-          : thumbUrl;
-        const safeDirect = directUrl && directUrl.startsWith('http')
-          ? `/api/proxy-image?url=${encodeURIComponent(directUrl)}`
-          : directUrl;
+        const safeThumb = imageUrl(thumbUrl);
+        const safeDirect = imageUrl(directUrl);
 
         return {
           id: `openverse-${item.id || idx}-${Date.now()}`,
@@ -151,6 +152,28 @@ async function searchOpenverse(keyword: string): Promise<PhotoItem[]> {
   } catch {
     return [];
   }
+}
+
+async function searchCommons(keyword: string): Promise<PhotoItem[]> {
+  try {
+    const params = new URLSearchParams({ action: 'query', generator: 'search',
+      gsrsearch: keyword, gsrnamespace: '6', gsrlimit: '30', prop: 'imageinfo',
+      iiprop: 'url|size|mime', iiurlwidth: '1000', format: 'json', origin: '*' });
+    const response = await fetch(`https://commons.wikimedia.org/w/api.php?${params}`,
+      { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Object.values(data.query?.pages || {}).flatMap((page: any) => {
+      const info = page.imageinfo?.[0];
+      if (!info || !/^image\/(jpeg|png|webp)$/.test(info.mime)) return [];
+      return [{ id: `commons-${page.pageid}`, title: cleanText(page.title),
+        photographer: 'Wikimedia Commons', location: '开放图片档案', camera: '',
+        focalLength: '', aperture: '', iso: '', year: '', url: info.url,
+        thumbnail: info.thumburl || info.url, proxyUrl: info.thumburl || info.url,
+        aspectRatio: info.width / info.height, category: keyword,
+        sourceUrl: info.descriptionurl, license: '查看来源页授权' }];
+    });
+  } catch { return []; }
 }
 
 /**
@@ -189,6 +212,7 @@ export async function validateCandidatePhotos(
         resolve(null);
       };
 
+      img.crossOrigin = 'anonymous';
       img.src = item.thumbnail || item.url;
     });
   };
@@ -212,7 +236,9 @@ export async function searchPhotos(
   }
 
   // 1. Try Universal Multi-Engine Search API first
-  const universalResults = await searchUniversalApi(cleanKeyword, safeSearch);
+  const universalResults = HAS_API
+    ? await searchUniversalApi(cleanKeyword, safeSearch)
+    : await searchCommons(cleanKeyword);
   const validatedUniversal = await validateCandidatePhotos(universalResults);
 
   if (validatedUniversal.length >= 8) {

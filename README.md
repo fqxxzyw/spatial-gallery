@@ -1,5 +1,7 @@
 # 🌌 Spatial Gallery — 极简空间手势照片浏览器
 
+[GitHub Pages 在线使用](https://fqxxzyw.github.io/spatial-gallery/)
+
 > **"Less Interface, More Interaction. 让照片成为主角，让界面尽可能隐形，让操作符合真实世界的物理直觉。"**
 
 基于 **Apple visionOS** 空间计算体验、**iOS Spring Physics** 弹簧物理引擎与 **MediaPipe Hands** 计算机视觉手势追踪，彻底抛弃赛博朋克与科幻科技风，打造纯净、克制、优雅的摄影级空间三维照片浏览器。
@@ -106,3 +108,9 @@ npm run lint
 # 3. 生产环境构建打包
 npm run build
 ```
+
+## GitHub Pages
+
+推送 main 后自动部署。Pages 构建设置 `VITE_STATIC_HOST=true`，使用 Wikimedia Commons 和 Openverse 浏览器直连搜索；只接受允许跨域且能加载的图片，不提供原服务器的全网聚合搜索和图片代理。动漫词条可能没有结果，可导入本地照片。
+
+`npm run dev` 仍运行原有 Express 服务。需要完整在线搜索时，另行部署 `server.ts`，并在 Pages 构建环境设置 `VITE_API_BASE_URL` 为允许跨域的 HTTPS 服务地址。不要把私密密钥写入 VITE 环境变量。
